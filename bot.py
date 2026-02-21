@@ -164,10 +164,7 @@ def fetch_tanzanite_trending() -> dict | None:
     try:
         resp = requests.get(TANZANITE_TRENDING_API, timeout=20)
         resp.raise_for_status()
-        data = resp.json()
-        log.info(f"Tanzanite trending keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
-        log.info(f"Tanzanite trending sample: {str(data)[:500]}")
-        return data
+        return resp.json()
     except Exception as e:
         log.error(f"Tanzanite trending API error: {e}")
         return None
@@ -667,9 +664,9 @@ def send_weekly_recap():
 def main():
     log.info("Starting The Cashout bot…")
 
-    # ── Test lines — uncomment ONE, deploy, then re-comment and redeploy ─────
+    # ── Test lines — uncomment ONE to test on deploy, then re-comment ──────────
     # send_weekly_recap()  # ← weekly recap test
-    send_daily_brief()     # ← daily brief test — remove after confirming
+    # send_daily_brief()   # ← daily brief test
 
     scheduler = BlockingScheduler(timezone="UTC")
 
