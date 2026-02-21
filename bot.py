@@ -93,9 +93,6 @@ CHAIN_EMOJI = {
     "OP":       "🔴",   # Optimism
 }
 
-# ── Volume threshold ──────────────────────────────────────────────────────────
-MIN_VOLUME_USD = 50_000   # Minimum daily deposit volume to qualify for rankings
-
 def chain_tag(chains: list[str]) -> str:
     """Return emoji string for a list of chains."""
     tags = [CHAIN_EMOJI.get(c.upper(), f"[{c}]") for c in chains]
@@ -390,11 +387,38 @@ def fetch_news_headlines(max_per_feed: int = 3, total_max: int = 12) -> list[dic
     return headlines[:total_max]
 
 
+# ── Morning greeting basket ───────────────────────────────────────────────────
+DAILY_GREETINGS = [
+    "Good morning — let's see who moved the chips overnight. ☕",
+    "Rise and grind. Onchain never sleeps, but you should. Here's what happened. 📊",
+    "Morning. Markets moved. Casinos shifted. Let's get into it. 🎰",
+    "Another day, another leaderboard. GM. 👋",
+    "Your daily dose of onchain reality. No fluff, just numbers. 📈",
+    "Doors are open, data is fresh. Good morning. ☀️",
+    "While you were sleeping, the chains were busy. Morning briefing below. 🌅",
+    "GM. Here's who won, who lost, and what the industry is talking about today. 🗞️",
+    "Coffee in hand? Good. You'll need it for these numbers. ☕",
+    "Fresh data, fresh week. Let's go. 🚀",
+    "The onchain scorecard is in. Good morning. 🏆",
+    "Morning. Roobet or Rollbit today? The data has opinions. 👀",
+    "Wakey wakey. The leaderboard has spoken. 📣",
+    "No algos, no spin — just raw onchain deposits. GM. ⛓️",
+    "The industry doesn't pause. Neither do we. Good morning. ⚡",
+]
+
 # ── Message builders ──────────────────────────────────────────────────────────
 
 def build_daily_message(data: dict | None) -> str:
     today = datetime.now(timezone.utc).strftime("%A, %d %B %Y")
-    lines = [f"<b>🎰 The Cashout — {today}</b>\n"]
+
+    # Rotate greeting by day-of-year — consistent per day, never repeats for 15 days
+    day_index = datetime.now(timezone.utc).timetuple().tm_yday
+    greeting  = DAILY_GREETINGS[day_index % len(DAILY_GREETINGS)]
+
+    lines = [
+        f"<b>🎰 The Cashout — {today}</b>",
+        f"<i>{greeting}</i>\n",
+    ]
 
     # ── Casino section ────────────────────────────────────────────────────────
     if data:
@@ -457,11 +481,50 @@ def build_daily_message(data: dict | None) -> str:
     return "\n".join(lines)
 
 
+def ai_top3_weekly_stories(headlines: list[dict]) -> list[dict]:
+    """Ask Groq to pick the 3 most significant stories from the week's headlines."""
+    if not headlines:
+        return []
+    numbered = "\n".join(f"{i+1}. {h['title']}" for i, h in enumerate(headlines))
+    prompt = (
+        "You are a senior iGaming industry analyst. "
+        "From the list of headlines below, pick the 3 most significant stories "
+        "for a B2B iGaming audience — think regulation, major deals, market moves, or platform shifts. "
+        "Reply ONLY with three numbers on separate lines (e.g. 3) — no explanation, no text.\n\n"
+        f"{numbered}"
+    )
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=20,
+            temperature=0.3,
+        )
+        raw = response.choices[0].message.content.strip()
+        indices = []
+        for line in raw.split("\n"):
+            try:
+                idx = int(line.strip()) - 1
+                if 0 <= idx < len(headlines):
+                    indices.append(idx)
+            except ValueError:
+                continue
+        return [headlines[i] for i in indices[:3]]
+    except Exception as e:
+        log.error(f"Groq top3 error: {e}")
+        return headlines[:3]
+
+
 def build_weekly_message(data: dict | None) -> tuple[str, io.BytesIO | None]:
     """Build the Monday weekly recap message + chart image."""
     week_end   = datetime.now(timezone.utc).strftime("%d %b %Y")
     week_start = (datetime.now(timezone.utc) - timedelta(days=6)).strftime("%d %b")
-    lines = [f"<b>📊 The Cashout — Weekly Onchain Recap</b>\n<i>{week_start} – {week_end}</i>\n"]
+
+    lines = [
+        f"☕ <b>Happy Monday, The Cashout community!</b>\n"
+        f"Grab your coffee — here's your weekly onchain recap.\n"
+        f"<i>{week_start} – {week_end}</i>\n"
+    ]
 
     chart_buf = None
 
@@ -472,13 +535,24 @@ def build_weekly_message(data: dict | None) -> tuple[str, io.BytesIO | None]:
         if weekly_vols:
             sorted_vols = sorted(weekly_vols.items(), key=lambda x: x[1], reverse=True)[:10]
             medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
-            lines.append("<b>Top 10 by 7-Day Deposit Volume</b>")
+            lines.append("📊 <b>Top 10 Onchain Casinos — 7-Day Volume</b>")
             for i, (name, vol) in enumerate(sorted_vols):
                 lines.append(f"{medals[i]} {name} — {format_volume(vol)}")
         else:
             lines.append("<i>Volume data unavailable this week.</i>")
     else:
         lines.append("<i>Could not reach Tanzanite Terminal API.</i>")
+
+    # Top 3 stories of the week via Groq
+    headlines = fetch_news_headlines(max_per_feed=5, total_max=20)
+    top3 = ai_top3_weekly_stories(headlines)
+    if top3:
+        lines.append("\n📰 <b>Top 3 Stories This Week</b>")
+        for h in top3:
+            lines.append(
+                f'• {h["title"]}\n'
+                f'  <a href="{h["link"]}">Read more →</a>'
+            )
 
     lines.append(
         "\n<i>Onchain data: <a href=\"https://terminal.tanzanite.xyz\">Tanzanite Terminal</a> "
@@ -576,8 +650,8 @@ def main():
     log.info("Starting The Cashout bot…")
 
     # ── Test lines — uncomment ONE, deploy, then re-comment and redeploy ─────
-    send_weekly_recap()    # ← remove after confirming weekly recap works
-    # send_daily_brief()   # ← use this to test the daily post instead
+    # send_weekly_recap()  # ← weekly recap test
+    send_daily_brief()     # ← daily brief test — remove after confirming
 
     scheduler = BlockingScheduler(timezone="UTC")
 
