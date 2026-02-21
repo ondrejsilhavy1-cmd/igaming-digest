@@ -283,7 +283,7 @@ def main():
     log.info("Starting iGaming Daily Brief bot…")
 
     # Optional: send one immediately on startup (useful for first deploy testing)
-    # send_daily_brief()
+     send_daily_brief()
 
     scheduler = BlockingScheduler(timezone="UTC")
     # Posts at 08:00 UTC daily — adjust to suit your audience timezone
