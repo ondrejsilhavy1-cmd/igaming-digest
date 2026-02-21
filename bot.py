@@ -282,11 +282,9 @@ def send_daily_brief():
 def main():
     log.info("Starting iGaming Daily Brief bot…")
 
-    # Optional: send one immediately on startup (useful for first deploy testing)
-     send_daily_brief()
+    send_daily_brief()  # ← must be indented with 4 spaces, inside main()
 
     scheduler = BlockingScheduler(timezone="UTC")
-    # Posts at 08:00 UTC daily — adjust to suit your audience timezone
     scheduler.add_job(send_daily_brief, "cron", hour=8, minute=0)
     log.info("Scheduler running. Next post at 08:00 UTC daily.")
 
