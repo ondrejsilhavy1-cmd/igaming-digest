@@ -71,32 +71,28 @@ def parse_casino_movements(data: dict) -> list:
     Parse Tanzanite JSON and return list of (name, current_vol, pct_change)
     sorted by pct_change DESC.
 
-    NOTE: Key names below are placeholders — adjust after inspecting
-    the 'Tanzanite raw keys' and 'Tanzanite sample' log lines.
+    API structure:
+    data['timeframes']['monthly']['sites'][casino_name]['chains'][chain]['tokens'][token]['intervals']
+    Each interval: {'day': 'YYYY-MM-DD', 'txs': int, 'usd': float}
+    Intervals are sorted most-recent first.
+    We compare interval[0] (latest day) vs interval[1] (previous day).
     """
     casino_data = defaultdict(lambda: {"current": 0.0, "previous": 0.0})
 
-    # ── Adapt this block to match real API schema ─────────────────────────────
-    casinos = (
-        data.get("casinos")
-        or data.get("data")
-        or data.get("results")
-        or []
-    )
+    try:
+        sites = data["timeframes"]["monthly"]["sites"]
+    except (KeyError, TypeError):
+        log.error("Tanzanite: could not find timeframes.monthly.sites in response")
+        return []
 
-    for casino in casinos:
-        name = (
-            casino.get("name")
-            or casino.get("casino")
-            or casino.get("project")
-            or "Unknown"
-        )
-        for chain in casino.get("chains", []):
-            for token in chain.get("tokens", []):
-                dep = token.get("deposits", {})
-                casino_data[name]["current"]  += float(dep.get("current",  dep.get("value", 0)) or 0)
-                casino_data[name]["previous"] += float(dep.get("previous", dep.get("prev",  0)) or 0)
-    # ─────────────────────────────────────────────────────────────────────────
+    for casino_name, casino_info in sites.items():
+        for chain_name, chain_info in casino_info.get("chains", {}).items():
+            for token_name, token_info in chain_info.get("tokens", {}).items():
+                intervals = token_info.get("intervals", [])
+                if len(intervals) >= 1:
+                    casino_data[casino_name]["current"] += float(intervals[0].get("usd", 0) or 0)
+                if len(intervals) >= 2:
+                    casino_data[casino_name]["previous"] += float(intervals[1].get("usd", 0) or 0)
 
     movements = []
     for name, vols in casino_data.items():
