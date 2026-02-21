@@ -658,13 +658,13 @@ def main():
 
     scheduler = BlockingScheduler(timezone="UTC")
 
-    # Daily brief — Tue–Fri at 07:00 UTC (= 8am CET winter / 9am CEST summer)
-    scheduler.add_job(send_daily_brief, "cron", day_of_week="tue-fri", hour=7, minute=0)
+    # Daily brief — Tue–Fri at 08:00 UTC (= 9am CET until Mar 30, then change to 07:00 UTC for CEST)
+    scheduler.add_job(send_daily_brief, "cron", day_of_week="tue-fri", hour=8, minute=0)
 
-    # Weekly recap — Monday at 07:00 UTC
-    scheduler.add_job(send_weekly_recap, "cron", day_of_week="mon", hour=7, minute=0)
+    # Weekly recap — Monday at 08:00 UTC
+    scheduler.add_job(send_weekly_recap, "cron", day_of_week="mon", hour=8, minute=0)
 
-    log.info("Scheduler running — Mon: weekly recap | Tue–Fri: daily brief at 07:00 UTC | weekends off.")
+    log.info("Scheduler running — Mon: weekly recap | Tue–Fri: daily brief at 08:00 UTC (9am CET) | weekends off.")
 
     try:
         scheduler.start()
