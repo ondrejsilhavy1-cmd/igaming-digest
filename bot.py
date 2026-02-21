@@ -93,6 +93,9 @@ CHAIN_EMOJI = {
     "OP":       "🔴",   # Optimism
 }
 
+# ── Volume threshold ──────────────────────────────────────────────────────────
+MIN_VOLUME_USD = 50_000   # Minimum daily deposit volume to qualify for rankings
+
 def chain_tag(chains: list[str]) -> str:
     """Return emoji string for a list of chains."""
     tags = [CHAIN_EMOJI.get(c.upper(), f"[{c}]") for c in chains]
