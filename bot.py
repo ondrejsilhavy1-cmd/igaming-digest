@@ -144,7 +144,8 @@ if RSSHUB_URL:
         RSS_FEEDS.append(f"{RSSHUB_URL.rstrip('/')}/twitter/user/{account}")
 
 # ── Tanzanite API ─────────────────────────────────────────────────────────────
-TANZANITE_API = "https://terminal.tanzanite.xyz/api/public/overview"
+TANZANITE_API         = "https://terminal.tanzanite.xyz/api/public/overview"
+TANZANITE_TRENDING_API = "https://terminal.tanzanite.xyz/api/public/trending"
 
 
 def fetch_tanzanite() -> dict | None:
@@ -156,6 +157,19 @@ def fetch_tanzanite() -> dict | None:
         return data
     except Exception as e:
         log.error(f"Tanzanite API error: {e}")
+        return None
+
+
+def fetch_tanzanite_trending() -> dict | None:
+    try:
+        resp = requests.get(TANZANITE_TRENDING_API, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        log.info(f"Tanzanite trending keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+        log.info(f"Tanzanite trending sample: {str(data)[:500]}")
+        return data
+    except Exception as e:
+        log.error(f"Tanzanite trending API error: {e}")
         return None
 
 
@@ -609,8 +623,9 @@ def send_event_countdown(event: dict, days_remaining: int):
 def send_daily_brief():
     log.info("Building daily brief…")
     try:
-        data    = fetch_tanzanite()
-        message = build_daily_message(data)
+        data     = fetch_tanzanite()
+        trending = fetch_tanzanite_trending()  # logging only for now — will integrate once schema is known
+        message  = build_daily_message(data)
         bot.send_message(
             CHANNEL_ID,
             message,
