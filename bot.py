@@ -56,6 +56,9 @@ def fetch_tanzanite() -> dict | None:
     try:
         resp = requests.get(TANZANITE_API, timeout=20)
         resp.raise_for_status()
+        data = resp.json()
+log.info(f"Tanzanite raw keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+return data
         return resp.json()
     except Exception as e:
         log.error(f"Tanzanite API error: {e}")
@@ -245,9 +248,10 @@ def build_daily_message() -> str:
             # Strip leading "1. " etc.
             summary_text = summary_lines[i].lstrip("0123456789. ").strip()
         news_block.append(
-            f'• <a href="{h["link"]}">{h["title"]}</a>\n'
-            f'  <i>{summary_text}</i>'
-        )
+    f'• {h["title"]}\n'
+    f'  <i>{summary_text}</i>\n'
+    f'  <a href="{h["link"]}">Read more</a>'
+)
 
     lines.append("\n".join(news_block))
 
