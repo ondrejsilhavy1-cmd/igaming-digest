@@ -1,0 +1,5 @@
+pyTelegramBotAPI>=4.18.0
+groq>=0.9.0
+apscheduler>=3.10.4
+feedparser>=6.0.11
+requests>=2.31.0
