@@ -98,6 +98,9 @@ def chain_tag(chains: list[str]) -> str:
     tags = [CHAIN_EMOJI.get(c.upper(), f"[{c}]") for c in chains]
     return " ".join(dict.fromkeys(tags))  # dedup, preserve order
 
+# ── Volume threshold ──────────────────────────────────────────────────────────
+MIN_VOLUME_USD = 50_000   # Minimum daily deposit volume to qualify for rankings
+
 # ── Event channels ────────────────────────────────────────────────────────────
 # Add each event as a dict below. Set active=True when the channel is live,
 # False to disable without deleting. Create the Telegram channel manually,
