@@ -441,19 +441,17 @@ def build_daily_message(data: dict | None) -> str:
         if movements:
             # Winner
             w = movements[0]
-            chains = chain_tag(w["chains"])
             lines.append(
                 f"🏆 <b>Winner of the Day</b>\n"
-                f"<b>{w['name']}</b> {chains} — {format_volume(w['current'])} "
+                f"<b>{w['name']}</b> — {format_volume(w['current'])} "
                 f"(<b>+{w['pct']:.1f}%</b> vs yesterday)\n"
             )
 
             # Loser
             l = movements[-1]
-            chains_l = chain_tag(l["chains"])
             lines.append(
                 f"💀 <b>Loser of the Day</b>\n"
-                f"<b>{l['name']}</b> {chains_l} — {format_volume(l['current'])} "
+                f"<b>{l['name']}</b> — {format_volume(l['current'])} "
                 f"(<b>{l['pct']:+.1f}%</b> vs yesterday)\n"
             )
 
@@ -466,8 +464,6 @@ def build_daily_message(data: dict | None) -> str:
                     f"(<b>{m['pct']:+.1f}%</b>)"
                 )
             lines.append("\n".join(gainers_lines) + "\n")
-
-            # Groq narrative
             narrative = ai_onchain_narrative(movements)
             if narrative:
                 lines.append(f"💡 <i>{narrative}</i>\n")
