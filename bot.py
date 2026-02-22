@@ -43,10 +43,17 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # Maps raw API slugs → clean display names
 # Add more as you discover them in the data
 CASINO_NAMES = {
+    # Stake — two separate brands
+    "stakeus":         "Stake.us",
+    "stakecom":        "Stake.com",
+    "stakecasino":     "Stake.com",
+    "stake":           "Stake.com",
+
+    # Major crypto casinos
     "roobetcom":       "Roobet",
+    "roobet":          "Roobet",
     "rollbitcom":      "Rollbit",
-    "stakeus":         "Stake",
-    "stakecasino":     "Stake",
+    "rollbit":         "Rollbit",
     "bcgame":          "BC.Game",
     "bc_game":         "BC.Game",
     "betfury":         "BetFury",
@@ -56,24 +63,44 @@ CASINO_NAMES = {
     "500casino":       "500 Casino",
     "winr":            "WINR",
     "crashino":        "Crashino",
+    "duelbitscom":     "Duelbits",
     "duelbits":        "Duelbits",
     "thunderpick":     "Thunderpick",
     "hypedrop":        "HypeDrop",
     "csgoempire":      "CSGOEmpire",
     "rakebackgg":      "Rakeback.gg",
     "gamdomcom":       "Gamdom",
+    "gamdom":          "Gamdom",
     "fortunejack":     "FortuneJack",
     "metaspins":       "Metaspins",
     "bitstarz":        "BitStarz",
     "cloudbet":        "Cloudbet",
     "1xbit":           "1xBit",
-    "sportsbet":       "Sportsbet.io",
     "sportsbetio":     "Sportsbet.io",
+    "sportsbet":       "Sportsbet.io",
     "primedice":       "Primedice",
     "winstrike":       "Winstrike",
     "bspin":           "Bspin",
     "trustdice":       "TrustDice",
     "nitrobetting":    "Nitrobetting",
+    "shufflecom":      "Shuffle",
+    "shuffle":         "Shuffle",
+    "luckio":          "Luck.io",
+    "luck":            "Luck.io",
+    "solpot":          "Solpot",
+    "solpump":         "Solpump",
+    "rainbet":         "Rainbet",
+    "duel":            "Duel",
+    "winz":            "Winz.io",
+    "winzio":          "Winz.io",
+    "vave":            "Vave",
+    "mystake":         "MyStake",
+    "jackbit":         "Jackbit",
+    "mirax":           "Mirax",
+    "bets":            "Bets.io",
+    "betsio":          "Bets.io",
+    "coinpoker":       "CoinPoker",
+    "pokerrrr":        "Pokerrrr",
 }
 
 def clean_name(raw: str) -> str:
@@ -267,55 +294,97 @@ def format_volume(vol: float) -> str:
 # ── Chart generator ───────────────────────────────────────────────────────────
 
 def generate_weekly_chart(weekly_vols: dict[str, float]) -> io.BytesIO | None:
-    """Generate a dark-themed horizontal bar chart of top 10 casinos by 7-day volume."""
+    """Generate a polished dark bar chart of top 10 casinos by 7-day volume."""
     if not weekly_vols:
         return None
 
-    # Top 10 by volume
     sorted_items = sorted(weekly_vols.items(), key=lambda x: x[1], reverse=True)[:10]
     names  = [item[0] for item in reversed(sorted_items)]
     values = [item[1] for item in reversed(sorted_items)]
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    fig.patch.set_facecolor("#05050a")
-    ax.set_facecolor("#05050a")
+    BG      = "#08080f"
+    ACCENT  = "#00e56b"
+    GOLD    = "#f0c040"
+    TEXT    = "#e0e0e0"
+    SUBTEXT = "#666677"
 
-    # Bars
-    colors = ["#00f078" if v == max(values) else "#00b050" for v in values]
-    bars = ax.barh(names, values, color=colors, height=0.6, edgecolor="none")
+    fig, ax = plt.subplots(figsize=(11, 6.5))
+    fig.patch.set_facecolor(BG)
+    ax.set_facecolor(BG)
 
-    # Value labels
-    for bar, val in zip(bars, values):
-        ax.text(
-            bar.get_width() * 1.01, bar.get_y() + bar.get_height() / 2,
-            format_volume(val),
-            va="center", ha="left",
-            color="#d4af37", fontsize=9, fontweight="bold"
-        )
+    max_val = max(values)
+    bar_height = 0.52
 
-    # Styling
-    ax.set_xlabel("7-Day Deposit Volume (USD)", color="#888", fontsize=9)
-    ax.tick_params(colors="#ccc", labelsize=9)
-    ax.xaxis.label.set_color("#888")
+    for i, (name, val) in enumerate(zip(names, values)):
+        # Subtle background track
+        ax.barh(i, max_val * 1.18, height=bar_height,
+                color="#0f0f1a", edgecolor="none", zorder=1)
+
+        # Bar brightness scales with value
+        brightness = 0.45 + 0.55 * (val / max_val)
+        g = int(0xe5 * brightness)
+        bar_color = f"#00{g:02x}6b" if val != max_val else ACCENT
+
+        ax.barh(i, val, height=bar_height,
+                color=bar_color, edgecolor="none", zorder=2)
+
+        # Thin left accent line
+        ax.barh(i, max_val * 0.004, height=bar_height,
+                color=ACCENT, edgecolor="none", zorder=3)
+
+        # Value label
+        ax.text(val + max_val * 0.012, i,
+                format_volume(val),
+                va="center", ha="left",
+                color=GOLD if val == max_val else TEXT,
+                fontsize=9.5,
+                fontweight="bold" if val == max_val else "normal",
+                fontfamily="monospace")
+
+    # Casino name labels
+    for i, (name, val) in enumerate(zip(names, values)):
+        ax.text(-max_val * 0.01, i, name,
+                va="center", ha="right",
+                color=TEXT if val == max_val else "#aaaabc",
+                fontsize=9.5,
+                fontweight="bold" if val == max_val else "normal")
+
+    # Remove all axes chrome
+    ax.set_yticks([])
+    ax.set_xticks([])
     for spine in ax.spines.values():
         spine.set_visible(False)
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: format_volume(x)))
-    ax.tick_params(axis="x", colors="#555")
-    ax.tick_params(axis="y", colors="#ccc")
-    ax.grid(axis="x", color="#1a2a1a", linewidth=0.5)
 
-    # Title
-    week_end   = datetime.now(timezone.utc).strftime("%d %b")
+    ax.set_xlim(-max_val * 0.22, max_val * 1.28)
+    ax.set_ylim(-0.7, len(names) - 0.3)
+
+    # Subtle row dividers
+    for i in range(len(names)):
+        ax.axhline(i - 0.42, color="#111122", linewidth=0.6, zorder=0)
+
+    # Header
+    week_end   = datetime.now(timezone.utc).strftime("%d %b %Y")
     week_start = (datetime.now(timezone.utc) - timedelta(days=6)).strftime("%d %b")
-    ax.set_title(
-        f"📊 Top Onchain Casinos by Deposit Volume  |  {week_start} – {week_end}",
-        color="#00f078", fontsize=11, fontweight="bold", pad=12
-    )
+    fig.text(0.05, 0.96, "Top Onchain Casinos",
+             color=ACCENT, fontsize=15, fontweight="bold", va="top", ha="left")
+    fig.text(0.05, 0.905, f"7-Day Deposit Volume  ·  {week_start} – {week_end}",
+             color=SUBTEXT, fontsize=9, va="top", ha="left")
 
-    plt.tight_layout()
+    # Branding — right side of header
+    fig.text(0.95, 0.96, "The Cashout",
+             color=TEXT, fontsize=13, fontweight="bold", va="top", ha="right")
+    fig.text(0.95, 0.912, "TG  @The_Cashout",
+             color=ACCENT, fontsize=8.5, va="top", ha="right")
+
+    # Data credit
+    fig.text(0.95, 0.03, "Data: Tanzanite Terminal",
+             color=SUBTEXT, fontsize=7.5, va="bottom", ha="right")
+
+    plt.subplots_adjust(left=0.18, right=0.88, top=0.88, bottom=0.06)
 
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=150, facecolor=fig.get_facecolor())
+    plt.savefig(buf, format="png", dpi=160,
+                facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
     return buf
