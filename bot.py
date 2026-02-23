@@ -301,86 +301,96 @@ def generate_weekly_chart(weekly_vols: dict[str, float]) -> io.BytesIO | None:
     sorted_items = sorted(weekly_vols.items(), key=lambda x: x[1], reverse=True)[:10]
     names  = [item[0] for item in reversed(sorted_items)]
     values = [item[1] for item in reversed(sorted_items)]
+    n = len(names)
 
-    BG      = "#08080f"
-    ACCENT  = "#00e56b"
-    GOLD    = "#f0c040"
-    TEXT    = "#e0e0e0"
-    SUBTEXT = "#666677"
+    BG        = "#18181f"
+    ACCENT    = "#00e56b"
+    GOLD      = "#f0c040"
+    TEXT      = "#ffffff"
+    SUBTEXT   = "#55556a"
+    ROW_BG    = "#1e1e28"
+    DIM_GREEN = "#00703a"
 
-    fig, ax = plt.subplots(figsize=(11, 6.5))
+    fig, ax = plt.subplots(figsize=(13, 8.5))
     fig.patch.set_facecolor(BG)
     ax.set_facecolor(BG)
 
-    max_val = max(values)
-    bar_height = 0.52
+    max_val   = max(values)
+    bar_h     = 0.44
+    row_h     = 1.0
+    bar_start = max_val * 0.01
+    positions = [i * row_h for i in range(n)]
 
-    for i, (name, val) in enumerate(zip(names, values)):
-        # Subtle background track
-        ax.barh(i, max_val * 1.18, height=bar_height,
-                color="#0f0f1a", edgecolor="none", zorder=1)
+    for i, (name, val, y) in enumerate(zip(names, values, positions)):
+        is_top = (val == max_val)
+        rank   = n - i
 
-        # Bar brightness scales with value
-        brightness = 0.45 + 0.55 * (val / max_val)
-        g = int(0xe5 * brightness)
-        bar_color = f"#00{g:02x}6b" if val != max_val else ACCENT
+        # Row card
+        row = mpatches.FancyBboxPatch(
+            (-max_val * 0.32, y - row_h * 0.46), max_val * 1.58, row_h * 0.88,
+            boxstyle="round,pad=0.004", facecolor=ROW_BG, edgecolor="none", zorder=1)
+        ax.add_patch(row)
 
-        ax.barh(i, val, height=bar_height,
-                color=bar_color, edgecolor="none", zorder=2)
+        # Rank badge
+        badge_w = max_val * 0.052
+        badge_h = row_h * 0.52
+        badge_x = -max_val * 0.305
+        badge = mpatches.FancyBboxPatch(
+            (badge_x, y - badge_h / 2), badge_w, badge_h,
+            boxstyle="round,pad=0.003",
+            facecolor=ACCENT if is_top else "#2a2a3a", edgecolor="none", zorder=3)
+        ax.add_patch(badge)
+        ax.text(badge_x + badge_w / 2, y, str(rank),
+                ha="center", va="center",
+                color="#000" if is_top else SUBTEXT,
+                fontsize=9, fontweight="bold", zorder=4)
 
-        # Thin left accent line
-        ax.barh(i, max_val * 0.004, height=bar_height,
-                color=ACCENT, edgecolor="none", zorder=3)
+        # Bar
+        bar = mpatches.FancyBboxPatch(
+            (bar_start, y - bar_h / 2), val, bar_h,
+            boxstyle="round,pad=0.004",
+            facecolor=ACCENT if is_top else DIM_GREEN,
+            edgecolor="none", zorder=2,
+            alpha=0.75 + 0.25 * (val / max_val))
+        ax.add_patch(bar)
 
-        # Value label
-        ax.text(val + max_val * 0.012, i,
-                format_volume(val),
+        # Casino name
+        ax.text(-max_val * 0.235, y, name,
                 va="center", ha="left",
-                color=GOLD if val == max_val else TEXT,
+                color=TEXT if is_top else "#bbbccc",
+                fontsize=11, fontweight="bold" if is_top else "normal")
+
+        # Volume label
+        ax.text(val + max_val * 0.016, y, format_volume(val),
+                va="center", ha="left",
+                color=GOLD if is_top else "#888899",
                 fontsize=9.5,
-                fontweight="bold" if val == max_val else "normal",
+                fontweight="bold" if is_top else "normal",
                 fontfamily="monospace")
 
-    # Casino name labels
-    for i, (name, val) in enumerate(zip(names, values)):
-        ax.text(-max_val * 0.01, i, name,
-                va="center", ha="right",
-                color=TEXT if val == max_val else "#aaaabc",
-                fontsize=9.5,
-                fontweight="bold" if val == max_val else "normal")
-
-    # Remove all axes chrome
     ax.set_yticks([])
     ax.set_xticks([])
     for spine in ax.spines.values():
         spine.set_visible(False)
 
-    ax.set_xlim(-max_val * 0.22, max_val * 1.28)
-    ax.set_ylim(-0.7, len(names) - 0.3)
+    ax.set_xlim(-max_val * 0.33, max_val * 1.28)
+    ax.set_ylim(positions[0] - row_h * 0.6, positions[-1] + row_h * 0.6)
 
-    # Subtle row dividers
-    for i in range(len(names)):
-        ax.axhline(i - 0.42, color="#111122", linewidth=0.6, zorder=0)
-
-    # Header
     week_end   = datetime.now(timezone.utc).strftime("%d %b %Y")
     week_start = (datetime.now(timezone.utc) - timedelta(days=6)).strftime("%d %b")
-    fig.text(0.05, 0.96, "Top Onchain Casinos",
-             color=ACCENT, fontsize=15, fontweight="bold", va="top", ha="left")
-    fig.text(0.05, 0.905, f"7-Day Deposit Volume  ·  {week_start} – {week_end}",
-             color=SUBTEXT, fontsize=9, va="top", ha="left")
 
-    # Branding — right side of header
-    fig.text(0.95, 0.96, "The Cashout",
-             color=TEXT, fontsize=13, fontweight="bold", va="top", ha="right")
-    fig.text(0.95, 0.912, "TG  @The_Cashout",
-             color=ACCENT, fontsize=8.5, va="top", ha="right")
+    fig.text(0.04, 0.975, "Top Onchain Casinos",
+             color=ACCENT, fontsize=18, fontweight="bold", va="top", ha="left")
+    fig.text(0.04, 0.918, f"7-Day Deposit Volume  ·  {week_start} – {week_end}",
+             color=SUBTEXT, fontsize=10, va="top", ha="left")
+    fig.text(0.96, 0.975, "The Cashout",
+             color=TEXT, fontsize=14, fontweight="bold", va="top", ha="right")
+    fig.text(0.96, 0.922, "TG  @The_Cashout",
+             color=ACCENT, fontsize=9.5, va="top", ha="right")
+    fig.text(0.96, 0.018, "Data: Tanzanite Terminal",
+             color=SUBTEXT, fontsize=8, va="bottom", ha="right")
 
-    # Data credit
-    fig.text(0.95, 0.03, "Data: Tanzanite Terminal",
-             color=SUBTEXT, fontsize=7.5, va="bottom", ha="right")
-
-    plt.subplots_adjust(left=0.18, right=0.88, top=0.88, bottom=0.06)
+    plt.subplots_adjust(left=0.02, right=0.97, top=0.89, bottom=0.03)
 
     buf = io.BytesIO()
     plt.savefig(buf, format="png", dpi=160,
@@ -560,23 +570,24 @@ def build_daily_message(data: dict | None) -> str:
     return "\n".join(lines)
 
 
-def ai_top3_weekly_stories(headlines: list[dict]) -> list[dict]:
-    """Ask Groq to pick the 3 most significant stories from the week's headlines."""
+def ai_top5_weekly_stories(headlines: list[dict]) -> list[dict]:
+    """Ask Groq to pick 5 most significant, topic-diverse stories from the week's headlines."""
     if not headlines:
         return []
     numbered = "\n".join(f"{i+1}. {h['title']}" for i, h in enumerate(headlines))
     prompt = (
         "You are a senior iGaming industry analyst. "
-        "From the list of headlines below, pick the 3 most significant stories "
+        "From the list of headlines below, pick the 5 most significant stories "
         "for a B2B iGaming audience — think regulation, major deals, market moves, or platform shifts. "
-        "Reply ONLY with three numbers on separate lines (e.g. 3) — no explanation, no text.\n\n"
+        "IMPORTANT: Do not pick two stories covering the same topic or event — diversity of topics matters. "
+        "Reply ONLY with five numbers on separate lines (e.g. 3) — no explanation, no text.\n\n"
         f"{numbered}"
     )
     try:
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=20,
+            max_tokens=30,
             temperature=0.3,
         )
         raw = response.choices[0].message.content.strip()
@@ -588,10 +599,10 @@ def ai_top3_weekly_stories(headlines: list[dict]) -> list[dict]:
                     indices.append(idx)
             except ValueError:
                 continue
-        return [headlines[i] for i in indices[:3]]
+        return [headlines[i] for i in indices[:5]]
     except Exception as e:
-        log.error(f"Groq top3 error: {e}")
-        return headlines[:3]
+        log.error(f"Groq top5 error: {e}")
+        return headlines[:5]
 
 
 def build_weekly_message(data: dict | None) -> tuple[str, io.BytesIO | None]:
@@ -622,12 +633,12 @@ def build_weekly_message(data: dict | None) -> tuple[str, io.BytesIO | None]:
     else:
         lines.append("<i>Could not reach Tanzanite Terminal API.</i>")
 
-    # Top 3 stories of the week via Groq
-    headlines = fetch_news_headlines(max_per_feed=5, total_max=20)
-    top3 = ai_top3_weekly_stories(headlines)
-    if top3:
-        lines.append("\n📰 <b>Top 3 Stories This Week</b>")
-        for h in top3:
+    # Top 5 stories of last week via Groq
+    headlines = fetch_news_headlines(max_per_feed=5, total_max=25)
+    top5 = ai_top5_weekly_stories(headlines)
+    if top5:
+        lines.append("\n📰 <b>Top 5 Stories Last Week</b>")
+        for h in top5:
             lines.append(
                 f'• {h["title"]}\n'
                 f'  <a href="{h["link"]}">Read more →</a>'
