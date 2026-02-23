@@ -8,6 +8,7 @@ Deploy: Railway via GitHub
 
 import os
 import io
+import json
 import logging
 import requests
 import feedparser
@@ -438,11 +439,43 @@ def ai_onchain_narrative(movements: list) -> str:
 
 # ── News ──────────────────────────────────────────────────────────────────────
 
+SEEN_HEADLINES_FILE = "/app/seen_headlines.json"
+SEEN_HEADLINES_TTL  = 7  # days to remember a headline
+
+
+def load_seen_headlines() -> dict:
+    """Load persisted headline hashes with their date of first appearance."""
+    try:
+        if os.path.exists(SEEN_HEADLINES_FILE):
+            with open(SEEN_HEADLINES_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        log.warning(f"Could not load seen headlines: {e}")
+    return {}
+
+
+def save_seen_headlines(seen: dict):
+    """Save headline hashes, pruning entries older than TTL."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=SEEN_HEADLINES_TTL)).strftime("%Y-%m-%d")
+    pruned = {k: v for k, v in seen.items() if v >= cutoff}
+    try:
+        with open(SEEN_HEADLINES_FILE, "w") as f:
+            json.dump(pruned, f)
+    except Exception as e:
+        log.warning(f"Could not save seen headlines: {e}")
+
+
+def headline_hash(title: str) -> str:
+    """Short hash of a normalised title for cross-day dedup."""
+    import hashlib
+    normalised = " ".join(title.lower().split())
+    return hashlib.md5(normalised.encode()).hexdigest()[:12]
+
+
 def titles_are_similar(a: str, b: str) -> bool:
     """Return True if two titles are likely covering the same story."""
     a_words = set(a.lower().split())
     b_words = set(b.lower().split())
-    # Remove common stop words
     stops = {"a","an","the","in","on","at","to","for","of","and","or","but",
              "with","as","by","from","is","are","was","were","be","been"}
     a_words -= stops
@@ -453,23 +486,31 @@ def titles_are_similar(a: str, b: str) -> bool:
     return overlap > 0.6
 
 
-def fetch_news_headlines(max_per_feed: int = 3, total_max: int = 12) -> list[dict]:
-    headlines = []
-    seen_titles = []
+def fetch_news_headlines(max_per_feed: int = 3, total_max: int = 10) -> list[dict]:
+    seen_cross_day = load_seen_headlines()
+    today          = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    headlines      = []
+    seen_titles    = []
+    new_seen       = {}
 
     for url in RSS_FEEDS:
         try:
-            feed = feedparser.parse(url)
+            feed  = feedparser.parse(url)
             count = 0
             for entry in feed.entries:
                 title = entry.get("title", "").strip()
                 link  = entry.get("link",  "").strip()
                 if not title or not link:
                     continue
-                # Smart dedup — catch near-duplicate stories
+                h = headline_hash(title)
+                # Skip if seen in a previous day's brief
+                if h in seen_cross_day:
+                    continue
+                # Skip near-duplicates within today's batch
                 if any(titles_are_similar(title, seen) for seen in seen_titles):
                     continue
                 seen_titles.append(title)
+                new_seen[h] = today
                 headlines.append({"title": title, "link": link})
                 count += 1
                 if count >= max_per_feed:
@@ -477,7 +518,16 @@ def fetch_news_headlines(max_per_feed: int = 3, total_max: int = 12) -> list[dic
         except Exception as e:
             log.warning(f"Feed error ({url}): {e}")
 
-    return headlines[:total_max]
+    result = headlines[:total_max]
+
+    # Only persist hashes that made it into the final list
+    final_hashes = {headline_hash(h["title"]) for h in result}
+    for h, d in new_seen.items():
+        if h in final_hashes:
+            seen_cross_day[h] = d
+    save_seen_headlines(seen_cross_day)
+
+    return result
 
 
 # ── Morning greeting basket ───────────────────────────────────────────────────
