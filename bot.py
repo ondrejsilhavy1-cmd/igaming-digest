@@ -785,14 +785,43 @@ def send_weekly_recap():
         log.error(f"Failed to post weekly recap: {e}")
 
 
-# ── Scheduler ─────────────────────────────────────────────────────────────────
+INTRO_PROMPTS = [
+    "Who's in the community this week? 👋\n\nDrop your intro below — <b>name, company, role, and one thing you're working on or looking for</b>. The best connections start here.\n\n<i>Operators, affiliates, platform providers, investors, builders — all welcome.</i>",
+    "It's Introduction Friday. 🤝\n\nTell us who you are — <b>name, what you do, and who you'd like to connect with</b>. Keep it short, keep it real.\n\n<i>This thread has connected people across Malta, London, Gibraltar, Amsterdam and beyond. You're next.</i>",
+    "Friday means new connections. 🌍\n\nDrop a quick intro — <b>name, company, and what brought you to The Cashout</b>. Someone in this community has exactly what you're looking for.\n\n<i>iGaming is a small world. Make it smaller.</i>",
+    "The weekly networking thread is open. 💼\n\nIntroduce yourself — <b>who you are, what you build or operate, and what you're curious about right now</b>.\n\n<i>Operators, affiliates, sportsbook tech, crypto gambling, data — all corners of the industry represented here.</i>",
+    "TGIF — time to meet someone new. ☕\n\nDrop your intro — <b>name, role, and one question you'd love to discuss with someone in this community</b>.\n\n<i>The Cashout community spans 20+ countries. Your next deal might be one comment away.</i>",
+]
+
+
+def send_intro_friday():
+    """Post the weekly Introduction Friday prompt."""
+    log.info("Posting Introduction Friday…")
+    try:
+        day_index = datetime.now(timezone.utc).timetuple().tm_yday
+        prompt    = INTRO_PROMPTS[day_index % len(INTRO_PROMPTS)]
+
+        message = (
+            f"👥 <b>Introduction Friday</b>\n\n"
+            f"{prompt}\n\n"
+            f"<i>New here? Start with your intro. Regulars — tag someone worth knowing. 👇</i>"
+        )
+        bot.send_message(
+            CHANNEL_ID,
+            message,
+            parse_mode="HTML",
+        )
+        log.info("Introduction Friday posted successfully.")
+    except Exception as e:
+        log.error(f"Failed to post Introduction Friday: {e}")
 
 def main():
     log.info("Starting The Cashout bot…")
 
     # ── Test lines — uncomment ONE to test on deploy, then re-comment ──────────
-    # send_weekly_recap()  # ← weekly recap test
-    # send_daily_brief()   # ← daily brief test
+    # send_weekly_recap()   # ← weekly recap test
+    # send_daily_brief()    # ← daily brief test
+    # send_intro_friday()   # ← intro friday test
 
     scheduler = BlockingScheduler(timezone="UTC")
 
@@ -802,7 +831,10 @@ def main():
     # Weekly recap — Monday at 08:00 UTC
     scheduler.add_job(send_weekly_recap, "cron", day_of_week="mon", hour=8, minute=0)
 
-    log.info("Scheduler running — Mon: weekly recap | Tue–Fri: daily brief at 08:00 UTC (9am CET) | weekends off.")
+    # Introduction Friday — 30 mins after daily brief so it lands as a second post
+    scheduler.add_job(send_intro_friday, "cron", day_of_week="fri", hour=8, minute=30)
+
+    log.info("Scheduler running — Mon: weekly recap | Tue–Fri: daily brief 08:00 UTC | Fri 08:30 UTC: intro post | weekends off.")
 
     try:
         scheduler.start()
