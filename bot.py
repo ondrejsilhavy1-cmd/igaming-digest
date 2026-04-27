@@ -58,7 +58,7 @@ CASINO_NAMES = {
     "bcgame":          "BC.Game",
     "bc_game":         "BC.Game",
     "betfury":         "BetFury",
-    "yologroup":       "Yolo Group",
+    "yologroup":       "Sportsbet.io",
     "acebet":          "AceBet",
     "_500casino":      "500 Casino",
     "500casino":       "500 Casino",
@@ -172,8 +172,8 @@ if RSSHUB_URL:
         RSS_FEEDS.append(f"{RSSHUB_URL.rstrip('/')}/twitter/user/{account}")
 
 # ── Tanzanite API ─────────────────────────────────────────────────────────────
-TANZANITE_API         = "https://terminal.tanzanite.xyz/api/public/overview"
-TANZANITE_TRENDING_API = "https://terminal.tanzanite.xyz/api/public/trending"
+TANZANITE_API          = "https://www.tanzanite.xyz/public/overview"
+TANZANITE_TRENDING_API = "https://www.tanzanite.xyz/public/trending"
 
 
 def fetch_tanzanite() -> dict | None:
