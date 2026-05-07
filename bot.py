@@ -58,7 +58,7 @@ CASINO_NAMES = {
     "bcgame":          "BC.Game",
     "bc_game":         "BC.Game",
     "betfury":         "BetFury",
-    "yologroup":       "Sportsbet.io",
+    "yologroup":       "Yolo Group",
     "acebet":          "AceBet",
     "_500casino":      "500 Casino",
     "500casino":       "500 Casino",
@@ -172,79 +172,93 @@ if RSSHUB_URL:
         RSS_FEEDS.append(f"{RSSHUB_URL.rstrip('/')}/twitter/user/{account}")
 
 # ── Tanzanite API ─────────────────────────────────────────────────────────────
-TANZANITE_API          = "https://www.tanzanite.xyz/public/overview"
-TANZANITE_TRENDING_API = "https://www.tanzanite.xyz/public/trending"
+TANZANITE_API = "https://www.tanzanite.xyz/api/public/casino-analytics/deposit-volume"
+# Single endpoint — returns both trending[] and deposit_volume.timeframes.monthly.sites
 
 
 def fetch_tanzanite() -> dict | None:
+    """
+    Fetches the single deposit-volume endpoint which returns:
+      data["trending"]                                         — pre-ranked list with usd_change_pct
+      data["deposit_volume"]["timeframes"]["monthly"]["sites"] — per-site chain/token breakdown
+    """
     try:
         resp = requests.get(TANZANITE_API, timeout=20)
         resp.raise_for_status()
         data = resp.json()
-        log.info(f"Tanzanite fetched OK — {data.get('total_count', '?')} records")
+        n_trending = len(data.get("trending", []))
+        n_sites    = len(data.get("deposit_volume", {}).get("timeframes", {}).get("monthly", {}).get("sites", {}))
+        log.info(f"Tanzanite fetched OK — {n_trending} trending, {n_sites} sites")
         return data
     except Exception as e:
         log.error(f"Tanzanite API error: {e}")
         return None
 
 
-def fetch_tanzanite_trending() -> dict | None:
-    try:
-        resp = requests.get(TANZANITE_TRENDING_API, timeout=20)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        log.error(f"Tanzanite trending API error: {e}")
-        return None
-
-
 def parse_casino_movements(data: dict) -> list:
     """
+    Uses the pre-calculated trending[] array from the API — each entry already has
+    usd_change_pct, label, and casino_id. We cross-reference deposit_volume for
+    the absolute current USD figure.
+
     Returns list of dicts:
-    {name, raw_name, current, previous, pct, chains}
+      {name, raw_name, current, previous, pct, chains}
     sorted by pct DESC, filtered by MIN_VOLUME_USD.
     """
-    casino_data = defaultdict(lambda: {"current": 0.0, "previous": 0.0, "chains": set()})
+    # ── Build absolute volume lookup from deposit_volume ─────────────────────
+    # Sum totals[0].usd across all chains/tokens per site → current period total
+    # Sum totals[0].prev_usd for the previous period
+    volume_map = defaultdict(lambda: {"current": 0.0, "previous": 0.0, "chains": set()})
 
     try:
-        sites = data["timeframes"]["monthly"]["sites"]
+        sites = data["deposit_volume"]["timeframes"]["monthly"]["sites"]
     except (KeyError, TypeError):
-        log.error("Tanzanite: could not find timeframes.monthly.sites")
-        return []
+        log.error("Tanzanite: could not find deposit_volume.timeframes.monthly.sites")
+        sites = {}
 
-    for casino_name, casino_info in sites.items():
-        for chain_name, chain_info in casino_info.get("chains", {}).items():
+    for site_name, site_info in sites.items():
+        for chain_name, chain_info in site_info.get("chains", {}).items():
             for token_name, token_info in chain_info.get("tokens", {}).items():
-                intervals = token_info.get("intervals", [])
-                if len(intervals) >= 1:
-                    casino_data[casino_name]["current"] += float(intervals[0].get("usd", 0) or 0)
-                    casino_data[casino_name]["chains"].add(chain_name)
-                if len(intervals) >= 2:
-                    casino_data[casino_name]["previous"] += float(intervals[1].get("usd", 0) or 0)
+                totals = token_info.get("totals", [])
+                if totals:
+                    t = totals[0]
+                    curr_usd = float(t.get("usd", 0) or 0)
+                    prev_usd = float(t.get("prev_usd", 0) or 0)
+                    # Skip obviously corrupted wallet balances (e.g. billions)
+                    if curr_usd < 50_000_000:
+                        volume_map[site_name]["current"]  += curr_usd
+                        volume_map[site_name]["previous"] += prev_usd
+                        volume_map[site_name]["chains"].add(chain_name)
 
+    # ── Use trending[] for pct_change, enrich with volume data ───────────────
+    trending = data.get("trending", [])
     movements = []
-    for raw_name, vols in casino_data.items():
-        curr = vols["current"]
-        prev = vols["previous"]
+
+    for entry in trending:
+        # trending uses "site" as the key; volume_map uses the same site slugs
+        raw_name = entry.get("casino_id") or entry.get("site", "")
+        label    = entry.get("label", raw_name)
+        pct      = entry.get("usd_change_pct")
+
+        # Skip null pct (no data for this period)
+        if pct is None:
+            continue
+
+        vol = volume_map.get(raw_name, {})
+        curr = vol.get("current", 0.0)
+        prev = vol.get("previous", 0.0)
 
         # Filter out low-volume casinos
         if curr < MIN_VOLUME_USD:
             continue
 
-        if prev > 0:
-            pct = ((curr - prev) / prev) * 100
-        elif curr > 0:
-            pct = 100.0
-        else:
-            pct = 0.0
-
         movements.append({
-            "name":     clean_name(raw_name),
+            "name":     clean_name(raw_name) or label,
             "raw_name": raw_name,
             "current":  curr,
             "previous": prev,
-            "pct":      pct,
-            "chains":   list(vols["chains"]),
+            "pct":      float(pct),
+            "chains":   list(vol.get("chains", set())),
         })
 
     movements.sort(key=lambda x: x["pct"], reverse=True)
@@ -260,7 +274,7 @@ def parse_weekly_volumes(data: dict) -> dict[str, float]:
     casino_vols = defaultdict(float)
 
     try:
-        sites = data["timeframes"]["monthly"]["sites"]
+        sites = data["deposit_volume"]["timeframes"]["monthly"]["sites"]
     except (KeyError, TypeError):
         return {}
 
@@ -271,7 +285,10 @@ def parse_weekly_volumes(data: dict) -> dict[str, float]:
                     try:
                         day = datetime.strptime(interval["day"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
                         if day >= cutoff:
-                            casino_vols[casino_name] += float(interval.get("usd", 0) or 0)
+                            usd = float(interval.get("usd", 0) or 0)
+                            # Skip corrupted values
+                            if usd < 50_000_000:
+                                casino_vols[casino_name] += usd
                     except (ValueError, KeyError):
                         continue
 
@@ -746,9 +763,8 @@ def send_event_countdown(event: dict, days_remaining: int):
 def send_daily_brief():
     log.info("Building daily brief…")
     try:
-        data     = fetch_tanzanite()
-        trending = fetch_tanzanite_trending()  # logging only for now — will integrate once schema is known
-        message  = build_daily_message(data)
+        data    = fetch_tanzanite()
+        message = build_daily_message(data)
         bot.send_message(
             CHANNEL_ID,
             message,
