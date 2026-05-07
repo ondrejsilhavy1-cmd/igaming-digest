@@ -301,6 +301,101 @@ def parse_weekly_volumes(data: dict) -> dict[str, float]:
     return cleaned
 
 
+TANZANITE_DISTRIBUTION_API = "https://www.tanzanite.xyz/api/public/casino-analytics/deposit-distribution"
+
+
+def fetch_tanzanite_distribution() -> dict | None:
+    """
+    Fetches the deposit-distribution endpoint.
+    Returns data containing deposit_distribution_buckets with:
+      - buckets: list of bucket definitions (key, label, min_usd, max_usd)
+      - rows: flat list of {timeframe, site, chain, bucket_key,
+              deposit_count, wallet_count, deposit_total_usd, wallet_total_usd}
+    Timeframe is always "weekly" — used for Monday recap only.
+    """
+    try:
+        resp = requests.get(TANZANITE_DISTRIBUTION_API, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        n_rows = len(data.get("deposit_distribution_buckets", {}).get("rows", []))
+        log.info(f"Tanzanite distribution fetched OK — {n_rows} rows")
+        return data
+    except Exception as e:
+        log.error(f"Tanzanite distribution API error: {e}")
+        return None
+
+
+def parse_player_profile(dist_data: dict) -> dict | None:
+    """
+    Processes deposit_distribution_buckets rows to find:
+      - whale_casino:   highest % of volume from $100K+ buckets
+      - retail_casino:  highest % of volume from <$1K buckets
+      - balanced_casino: most evenly spread across all buckets (lowest max bucket %)
+
+    Returns dict with keys: whale, whale_pct, retail, retail_pct, balanced, balanced_pct
+    or None if data is unavailable.
+    """
+    try:
+        rows = dist_data["deposit_distribution_buckets"]["rows"]
+    except (KeyError, TypeError):
+        log.error("Distribution: could not find deposit_distribution_buckets.rows")
+        return None
+
+    if not rows:
+        return None
+
+    # Aggregate deposit_total_usd per site per bucket_key
+    site_buckets: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for row in rows:
+        site      = row.get("site", "")
+        bucket    = row.get("bucket_key", "")
+        usd       = float(row.get("deposit_total_usd", 0) or 0)
+        if site and bucket:
+            site_buckets[site][bucket] += usd
+
+    WHALE_BUCKETS  = {"100000_1000000", "gte_1000000"}
+    RETAIL_BUCKETS = {"lt_100", "100_1000"}
+
+    whale_casino    = None;  whale_pct    = 0.0
+    retail_casino   = None;  retail_pct   = 0.0
+    balanced_casino = None;  balanced_pct = 100.0  # lower = more balanced
+
+    for site, buckets in site_buckets.items():
+        total = sum(buckets.values())
+        if total < MIN_VOLUME_USD:
+            continue
+
+        whale_share  = sum(buckets.get(b, 0) for b in WHALE_BUCKETS)  / total * 100
+        retail_share = sum(buckets.get(b, 0) for b in RETAIL_BUCKETS) / total * 100
+        max_bucket   = max(buckets.values()) / total * 100  # concentration score
+
+        display = clean_name(site) or site
+
+        if whale_share > whale_pct:
+            whale_pct    = whale_share
+            whale_casino = display
+
+        if retail_share > retail_pct:
+            retail_pct    = retail_share
+            retail_casino = display
+
+        if max_bucket < balanced_pct:
+            balanced_pct    = max_bucket
+            balanced_casino = display
+
+    if not whale_casino:
+        return None
+
+    return {
+        "whale":        whale_casino,
+        "whale_pct":    whale_pct,
+        "retail":       retail_casino,
+        "retail_pct":   retail_pct,
+        "balanced":     balanced_casino,
+        "balanced_pct": balanced_pct,
+    }
+
+
 def format_volume(vol: float) -> str:
     if vol >= 1_000_000:
         return f"${vol/1_000_000:.2f}M"
@@ -672,7 +767,7 @@ def ai_top5_weekly_stories(headlines: list[dict]) -> list[dict]:
         return headlines[:5]
 
 
-def build_weekly_message(data: dict | None) -> tuple[str, io.BytesIO | None]:
+def build_weekly_message(data: dict | None, dist_data: dict | None = None) -> tuple[str, io.BytesIO | None]:
     """Build the Monday weekly recap message + chart image."""
     week_end   = datetime.now(timezone.utc).strftime("%d %b %Y")
     week_start = (datetime.now(timezone.utc) - timedelta(days=6)).strftime("%d %b")
@@ -699,6 +794,24 @@ def build_weekly_message(data: dict | None) -> tuple[str, io.BytesIO | None]:
             lines.append("<i>Volume data unavailable this week.</i>")
     else:
         lines.append("<i>Could not reach Tanzanite Terminal API.</i>")
+
+    # Player profile — retail vs whale breakdown from distribution endpoint
+    if dist_data:
+        profile = parse_player_profile(dist_data)
+        if profile:
+            lines.append("\n🎯 <b>Player Profile This Week</b>")
+            lines.append(
+                f"🐋 <b>Whale casino:</b> {profile['whale']} "
+                f"— {profile['whale_pct']:.0f}% of volume from $100K+ deposits"
+            )
+            lines.append(
+                f"🛒 <b>Most retail:</b> {profile['retail']} "
+                f"— {profile['retail_pct']:.0f}% of volume from &lt;$1K deposits"
+            )
+            lines.append(
+                f"📊 <b>Most balanced:</b> {profile['balanced']} "
+                f"— most evenly spread across deposit sizes"
+            )
 
     # Top 5 stories of last week via Groq
     headlines = fetch_news_headlines(max_per_feed=5, total_max=25)
@@ -779,8 +892,9 @@ def send_daily_brief():
 def send_weekly_recap():
     log.info("Building weekly recap…")
     try:
-        data          = fetch_tanzanite()
-        message, chart = build_weekly_message(data)
+        data      = fetch_tanzanite()
+        dist_data = fetch_tanzanite_distribution()
+        message, chart = build_weekly_message(data, dist_data)
 
         if chart:
             bot.send_photo(
