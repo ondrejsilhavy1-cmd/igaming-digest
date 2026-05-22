@@ -104,9 +104,19 @@ CASINO_NAMES = {
     "pokerrrr":        "Pokerrrr",
 }
 
+# Populated at startup from Tanzanite meta.entity_display — auto-updates when
+# Tanzanite renames slugs. Falls back to CASINO_NAMES, then slug cleanup.
+CASINO_LABELS: dict[str, str] = {}
+
+
 def clean_name(raw: str) -> str:
-    """Return display name for a casino slug."""
-    return CASINO_NAMES.get(raw.lower(), raw.replace("_", " ").title())
+    """Return display name for a casino slug, checking API labels first."""
+    key = raw.lower()
+    return (
+        CASINO_LABELS.get(key)
+        or CASINO_NAMES.get(key)
+        or raw.replace("_", " ").title()
+    )
 
 # ── Chain emoji map ───────────────────────────────────────────────────────────
 CHAIN_EMOJI = {
@@ -172,8 +182,11 @@ if RSSHUB_URL:
         RSS_FEEDS.append(f"{RSSHUB_URL.rstrip('/')}/twitter/user/{account}")
 
 # ── Tanzanite API ─────────────────────────────────────────────────────────────
-TANZANITE_API = "https://www.tanzanite.xyz/api/public/casino-analytics/deposit-volume"
-# Single endpoint — returns both trending[] and deposit_volume.timeframes.monthly.sites
+TANZANITE_API          = "https://www.tanzanite.xyz/api/public/casino-analytics/deposit-volume"
+TANZANITE_TRENDING_API = "https://www.tanzanite.xyz/api/public/casino-analytics/trending"
+# deposit-volume  → daily brief (interval day-on-day pct)
+# trending        → weekly recap (pre-calculated week-on-week pct)
+# deposit-distribution → weekly player profile + meta.entity_display labels
 
 
 def fetch_tanzanite() -> dict | None:
@@ -195,70 +208,94 @@ def fetch_tanzanite() -> dict | None:
         return None
 
 
+def fetch_tanzanite_trending() -> list:
+    """
+    Fetches the dedicated trending endpoint — returns week-on-week pct changes.
+    Used exclusively by the Monday weekly recap.
+    Returns the trending list directly, or [] on error.
+    """
+    try:
+        resp = requests.get(TANZANITE_TRENDING_API, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        entries = data.get("trending", [])
+        log.info(f"Tanzanite trending fetched OK — {len(entries)} entries")
+        return entries
+    except Exception as e:
+        log.error(f"Tanzanite trending API error: {e}")
+        return []
+
+
+def fetch_casino_labels() -> None:
+    """
+    Fetches meta.entity_display from deposit-distribution and populates
+    CASINO_LABELS with slug -> label mappings. Called once at startup.
+    Failures are non-fatal — falls back to CASINO_NAMES.
+    """
+    global CASINO_LABELS
+    try:
+        resp = requests.get(TANZANITE_DISTRIBUTION_API, timeout=20)
+        resp.raise_for_status()
+        entity_display = resp.json().get("meta", {}).get("entity_display", {})
+        CASINO_LABELS = {slug: info["label"] for slug, info in entity_display.items() if "label" in info}
+        log.info(f"Casino labels loaded — {len(CASINO_LABELS)} entries from API")
+    except Exception as e:
+        log.warning(f"Could not load casino labels from API: {e} — using hardcoded CASINO_NAMES")
+
+
 def parse_casino_movements(data: dict) -> list:
     """
-    Uses the pre-calculated trending[] array from the API — each entry already has
-    usd_change_pct, label, and casino_id. We cross-reference deposit_volume for
-    the absolute current USD figure.
+    Computes day-on-day pct change from intervals[0] vs intervals[1] in deposit_volume.
+    This is reliable regardless of whether trending[] is present in the response.
 
     Returns list of dicts:
       {name, raw_name, current, previous, pct, chains}
     sorted by pct DESC, filtered by MIN_VOLUME_USD.
     """
-    # ── Build absolute volume lookup from deposit_volume ─────────────────────
-    # Sum totals[0].usd across all chains/tokens per site → current period total
-    # Sum totals[0].prev_usd for the previous period
-    volume_map = defaultdict(lambda: {"current": 0.0, "previous": 0.0, "chains": set()})
+    casino_data = defaultdict(lambda: {"current": 0.0, "previous": 0.0, "chains": set()})
 
     try:
         sites = data["deposit_volume"]["timeframes"]["monthly"]["sites"]
     except (KeyError, TypeError):
         log.error("Tanzanite: could not find deposit_volume.timeframes.monthly.sites")
-        sites = {}
+        return []
 
     for site_name, site_info in sites.items():
         for chain_name, chain_info in site_info.get("chains", {}).items():
             for token_name, token_info in chain_info.get("tokens", {}).items():
-                totals = token_info.get("totals", [])
-                if totals:
-                    t = totals[0]
-                    curr_usd = float(t.get("usd", 0) or 0)
-                    prev_usd = float(t.get("prev_usd", 0) or 0)
-                    # Skip obviously corrupted wallet balances (e.g. billions)
-                    if curr_usd < 50_000_000:
-                        volume_map[site_name]["current"]  += curr_usd
-                        volume_map[site_name]["previous"] += prev_usd
-                        volume_map[site_name]["chains"].add(chain_name)
+                intervals = token_info.get("intervals", [])
+                if len(intervals) >= 1:
+                    usd0 = float(intervals[0].get("usd", 0) or 0)
+                    if usd0 < 50_000_000:  # skip corrupted values
+                        casino_data[site_name]["current"] += usd0
+                        casino_data[site_name]["chains"].add(chain_name)
+                if len(intervals) >= 2:
+                    usd1 = float(intervals[1].get("usd", 0) or 0)
+                    if usd1 < 50_000_000:
+                        casino_data[site_name]["previous"] += usd1
 
-    # ── Use trending[] for pct_change, enrich with volume data ───────────────
-    trending = data.get("trending", [])
     movements = []
+    for raw_name, vols in casino_data.items():
+        curr = vols["current"]
+        prev = vols["previous"]
 
-    for entry in trending:
-        # trending uses "site" as the key; volume_map uses the same site slugs
-        raw_name = entry.get("casino_id") or entry.get("site", "")
-        label    = entry.get("label", raw_name)
-        pct      = entry.get("usd_change_pct")
-
-        # Skip null pct (no data for this period)
-        if pct is None:
-            continue
-
-        vol = volume_map.get(raw_name, {})
-        curr = vol.get("current", 0.0)
-        prev = vol.get("previous", 0.0)
-
-        # Filter out low-volume casinos
         if curr < MIN_VOLUME_USD:
             continue
 
+        if prev > 0:
+            pct = ((curr - prev) / prev) * 100
+        elif curr > 0:
+            pct = 100.0
+        else:
+            continue
+
         movements.append({
-            "name":     clean_name(raw_name) or label,
+            "name":     clean_name(raw_name),
             "raw_name": raw_name,
             "current":  curr,
             "previous": prev,
-            "pct":      float(pct),
-            "chains":   list(vol.get("chains", set())),
+            "pct":      pct,
+            "chains":   list(vols["chains"]),
         })
 
     movements.sort(key=lambda x: x["pct"], reverse=True)
@@ -530,7 +567,7 @@ def ai_onchain_narrative(movements: list) -> str:
         "Based on today's onchain deposit data, write 2-3 punchy sentences interpreting what's happening. "
         "Be specific — reference the casinos and numbers. No fluff, no disclaimers. "
         "Write in present tense as if this is breaking intelligence.\n\n"
-        f"Top gainers today: {summary}\n"
+        f"Top gainers (last 3-day period): {summary}\n"
         f"Biggest loser: {loser_s}\n"
         f"Winner volume: {format_volume(movements[0]['current'])}\n"
         f"Loser volume: {format_volume(loser['current'])}"
@@ -683,17 +720,17 @@ def build_daily_message(data: dict | None) -> str:
             # Winner
             w = movements[0]
             lines.append(
-                f"🏆 <b>Winner of the Day</b>\n"
+                f"🏆 <b>Winner — Last 3 Days</b>\n"
                 f"<b>{w['name']}</b> — {format_volume(w['current'])} "
-                f"(<b>+{w['pct']:.1f}%</b> vs yesterday)\n"
+                f"(<b>+{w['pct']:.1f}%</b> vs prev. period)\n"
             )
 
             # Loser
             l = movements[-1]
             lines.append(
-                f"💀 <b>Loser of the Day</b>\n"
+                f"💀 <b>Loser — Last 3 Days</b>\n"
                 f"<b>{l['name']}</b> — {format_volume(l['current'])} "
-                f"(<b>{l['pct']:+.1f}%</b> vs yesterday)\n"
+                f"(<b>{l['pct']:+.1f}%</b> vs prev. period)\n"
             )
 
             # Top 5
@@ -767,7 +804,7 @@ def ai_top5_weekly_stories(headlines: list[dict]) -> list[dict]:
         return headlines[:5]
 
 
-def build_weekly_message(data: dict | None, dist_data: dict | None = None) -> tuple[str, io.BytesIO | None]:
+def build_weekly_message(data: dict | None, dist_data: dict | None = None, trending: list | None = None) -> tuple[str, io.BytesIO | None]:
     """Build the Monday weekly recap message + chart image."""
     week_end   = datetime.now(timezone.utc).strftime("%d %b %Y")
     week_start = (datetime.now(timezone.utc) - timedelta(days=6)).strftime("%d %b")
@@ -794,6 +831,21 @@ def build_weekly_message(data: dict | None, dist_data: dict | None = None) -> tu
             lines.append("<i>Volume data unavailable this week.</i>")
     else:
         lines.append("<i>Could not reach Tanzanite Terminal API.</i>")
+
+    # Week-on-week movers from dedicated trending endpoint
+    if trending:
+        gainers = [e for e in trending if (e.get("usd_change_pct") or 0) > 0][:3]
+        losers  = [e for e in reversed(trending) if (e.get("usd_change_pct") or 0) < 0][:3]
+        if gainers or losers:
+            lines.append("\n📈 <b>Week-on-Week Movers</b>")
+        if gainers:
+            lines.append("Winners:")
+            for e in gainers:
+                lines.append(f"  ↑ {e['label']} +{e['usd_change_pct']:.1f}%")
+        if losers:
+            lines.append("Losers:")
+            for e in losers:
+                lines.append(f"  ↓ {e['label']} {e['usd_change_pct']:.1f}%")
 
     # Player profile — retail vs whale breakdown from distribution endpoint
     if dist_data:
@@ -894,14 +946,23 @@ def send_weekly_recap():
     try:
         data      = fetch_tanzanite()
         dist_data = fetch_tanzanite_distribution()
-        message, chart = build_weekly_message(data, dist_data)
+        trending  = fetch_tanzanite_trending()   # week-on-week, used for weekly recap
+        message, chart = build_weekly_message(data, dist_data, trending)
 
         if chart:
+            # Send chart as photo with minimal caption, then full message as follow-up text
+            # Telegram caption limit is 1024 chars — the full weekly message exceeds this
             bot.send_photo(
                 CHANNEL_ID,
                 photo=chart,
-                caption=message,
+                caption="📊 <b>Weekly Onchain Deposit Rankings</b>",
                 parse_mode="HTML",
+            )
+            bot.send_message(
+                CHANNEL_ID,
+                message,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
         else:
             bot.send_message(
@@ -947,6 +1008,9 @@ def send_intro_friday():
 
 def main():
     log.info("Starting The Cashout bot…")
+
+    # Load casino display labels from Tanzanite API (non-fatal if unavailable)
+    fetch_casino_labels()
 
     # ── Test lines — uncomment ONE to test on deploy, then re-comment ──────────
     # send_weekly_recap()   # ← weekly recap test
