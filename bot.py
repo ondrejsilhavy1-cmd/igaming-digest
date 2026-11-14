@@ -289,7 +289,10 @@ def fetch_casino_labels() -> None:
     try:
         resp = requests.get(TANZANITE_DISTRIBUTION_API, timeout=20)
         resp.raise_for_status()
-        entity_display = resp.json().get("meta", {}).get("entity_display", {})
+        body = resp.json()
+        # meta used to be top-level; it now sits under deposit_distribution_buckets
+        meta = body.get("meta") or body.get("deposit_distribution_buckets", {}).get("meta", {})
+        entity_display = meta.get("entity_display", {})
         CASINO_LABELS = {slug: info["label"] for slug, info in entity_display.items() if "label" in info}
         log.info(f"Casino labels loaded — {len(CASINO_LABELS)} entries from API")
     except Exception as e:
