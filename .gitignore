@@ -1,0 +1,12 @@
+# Local state
+.state/
+state.json
+state.json.tmp
+seen_headlines.json
+
+# Python
+.venv/
+__pycache__/
+
+# Secrets
+.env
