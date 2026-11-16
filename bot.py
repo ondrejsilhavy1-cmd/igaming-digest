@@ -5,7 +5,7 @@ Telegram Channel Bot
 Mon 13:00 overview · Tue 11:00 news · Wed 11:30 poll · Thu 11:00 onchain update
 Fri 15:30 afternoon drink · event countdowns — all Europe/Berlin
 
-Stack: Python, APScheduler, feedparser, Groq (llama-3.3-70b-versatile), telebot, requests, matplotlib
+Stack: Python, APScheduler, feedparser, Groq (GROQ_MODEL, default openai/gpt-oss-120b), telebot, requests, matplotlib
 Data: Tanzanite, Circus, FairGambling
 Deploy: Railway via GitHub
 """
@@ -87,9 +87,13 @@ STATE_FILE          = os.path.join(STATE_DIR, "state.json")
 SEEN_HEADLINES_FILE = os.path.join(STATE_DIR, "seen_headlines.json")
 
 # ── Clients ───────────────────────────────────────────────────────────────────
-GROQ_MODEL  = "llama-3.3-70b-versatile"
+# llama-3.3-70b-versatile was shut down for free/developer keys on 2026-08-16.
+# Default is Groq's recommended production replacement (docs/deprecations).
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_MODEL  = os.environ.get("GROQ_MODEL", DEFAULT_GROQ_MODEL).strip() or DEFAULT_GROQ_MODEL
 bot         = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
 groq_client = Groq(api_key=GROQ_API_KEY)
+log.info(f"Groq model: {GROQ_MODEL}")
 
 # ── Extra data sources (optional, fail-soft) ──────────────────────────────────
 HTTP_HEADERS = {
@@ -199,8 +203,17 @@ def chain_tag(chains: list[str]) -> str:
     tags = [CHAIN_EMOJI.get(c.upper(), f"[{c}]") for c in chains]
     return " ".join(dict.fromkeys(tags))  # dedup, preserve order
 
-# ── Volume threshold ──────────────────────────────────────────────────────────
+# ── Volume thresholds ─────────────────────────────────────────────────────────
 MIN_VOLUME_USD = 50_000   # Minimum daily deposit volume to qualify for rankings
+
+# Monday week-on-week movers: trending % is joined to 7-day deposit volumes.
+# Casinos with missing or near-zero current volume, or a collapse that looks
+# like a data gap, are excluded. Winners also need a meaningful previous-week
+# base so a tiny prior week cannot produce a huge percentage bounce.
+WOW_MIN_CURRENT_USD = 50_000          # skip if this week's volume is missing or below this
+WOW_MIN_PREV_USD = 50_000             # skip if implied previous-week base is below this
+WOW_DATA_GAP_PCT = -90.0              # drops at or below this…
+WOW_DATA_GAP_MAX_CURRENT_USD = 50_000 # …with current volume under this look like a data gap
 
 # ── Big events ────────────────────────────────────────────────────────────────
 # Countdown posts go to the main channel: weekly from 35 days before the start,
@@ -392,6 +405,113 @@ def parse_weekly_volumes(data: dict) -> dict[str, float]:
             cleaned[clean_name(raw)] = cleaned.get(clean_name(raw), 0) + vol
 
     return cleaned
+
+
+def parse_site_volumes(data: dict | None, days: int = 7, offset_days: int = 0) -> dict[str, float]:
+    """
+    Unfiltered {raw_site: usd} totals for a rolling UTC window:
+    [now - (offset_days + days), now - offset_days).
+    Used to sanity-check week-on-week trending percentages.
+    """
+    if not data:
+        return {}
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=offset_days + days)
+    end = now - timedelta(days=offset_days)
+    casino_vols: dict[str, float] = defaultdict(float)
+
+    try:
+        sites = data["deposit_volume"]["timeframes"]["monthly"]["sites"]
+    except (KeyError, TypeError):
+        return {}
+
+    for casino_name, casino_info in sites.items():
+        for chain_info in casino_info.get("chains", {}).values():
+            for token_info in chain_info.get("tokens", {}).values():
+                for interval in token_info.get("intervals", []):
+                    try:
+                        day = datetime.strptime(interval["day"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                        if start <= day < end:
+                            usd = float(interval.get("usd", 0) or 0)
+                            if usd < 50_000_000:
+                                casino_vols[casino_name] += usd
+                    except (ValueError, KeyError, TypeError):
+                        continue
+    return dict(casino_vols)
+
+
+def implied_previous_volume(current: float, pct: float) -> float | None:
+    """Infer last week's volume from this week's volume and a WoW percent change."""
+    denom = 1.0 + pct / 100.0
+    if denom == 0:
+        return None
+    return current / denom
+
+
+def wow_current_volume(volumes: dict[str, float], entry: dict) -> float | None:
+    for key in (entry.get("site"), entry.get("casino_id")):
+        if isinstance(key, str) and key in volumes:
+            return volumes[key]
+    return None
+
+
+def is_reliable_wow_mover(current: float | None, pct: float, *, have_volumes: bool) -> bool:
+    """
+    True if a trending % move looks like a real change, not a data gap.
+    When 7-day volumes are unavailable, only obvious gap-like collapses are dropped.
+    """
+    if not have_volumes:
+        return pct > WOW_DATA_GAP_PCT
+    if current is None or current < WOW_MIN_CURRENT_USD:
+        return False
+    prev = implied_previous_volume(current, pct)
+    if prev is None or prev < WOW_MIN_PREV_USD:
+        return False
+    if pct <= WOW_DATA_GAP_PCT and current < WOW_DATA_GAP_MAX_CURRENT_USD:
+        return False
+    return True
+
+
+def select_wow_movers(
+    trending: list | None,
+    volumes: dict[str, float],
+    n: int = 3,
+) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+    """
+    Pick up to n week-on-week winners and losers from Tanzanite trending,
+    after dropping missing / near-zero volume and likely data-gap moves.
+    Returns (gainers, losers) as lists of (label, pct).
+    """
+    have_volumes = bool(volumes)
+    if not have_volumes:
+        log.warning(
+            "No 7-day volumes to verify WoW movers; excluding only apparent "
+            f"data-gap drops (pct <= {WOW_DATA_GAP_PCT})."
+        )
+
+    scored: list[tuple[str, float]] = []
+    skipped: list[str] = []
+    for raw in as_list(trending):
+        entry = as_dict(raw)
+        label = entry.get("label")
+        pct = num(entry.get("usd_change_pct"))
+        if not label or pct is None:
+            continue
+        current = wow_current_volume(volumes, entry)
+        if not is_reliable_wow_mover(current, pct, have_volumes=have_volumes):
+            skipped.append(str(label))
+            continue
+        scored.append((str(label), pct))
+
+    if skipped:
+        log.warning(
+            "WoW movers excluded as missing/near-zero volume or a likely data gap: %s",
+            ", ".join(skipped),
+        )
+
+    gainers = [m for m in scored if m[1] > 0][:n]
+    losers = [m for m in reversed(scored) if m[1] < 0][:n]
+    return gainers, losers
 
 
 TANZANITE_DISTRIBUTION_API = "https://www.tanzanite.xyz/api/public/casino-analytics/deposit-distribution"
@@ -938,20 +1058,54 @@ def fetch_news_headlines(max_per_feed: int = 3, total_max: int = 10, skip_posted
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
 
+def _groq_rejects_reasoning_params(error: Exception) -> bool:
+    """True when the model/API does not accept reasoning_format / reasoning_effort."""
+    text = str(error).lower()
+    return any(
+        token in text
+        for token in ("reasoning_format", "reasoning_effort", "include_reasoning")
+    )
+
+
 def groq_chat(prompt: str, max_tokens: int, temperature: float = 0.5, as_json: bool = False) -> str | None:
     """One Groq completion. Returns the text, or None on any error."""
+    kwargs = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if as_json:
+        kwargs["response_format"] = {"type": "json_object"}
+
+    # Default production models (openai/gpt-oss-*) are reasoning models.
+    # Hidden + low effort keeps the answer in `content`. A token buffer stops
+    # reasoning from consuming a tight max_tokens budget (e.g. 30 for story picks).
+    # If the configured model rejects these parameters, retry without them.
+    reasoning_kwargs = {
+        **kwargs,
+        "max_tokens": max_tokens + 1024,
+        "reasoning_format": "hidden",
+        "reasoning_effort": "low",
+    }
+
     try:
-        kwargs = {"response_format": {"type": "json_object"}} if as_json else {}
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens,
-            temperature=temperature,
-            **kwargs,
-        )
+        try:
+            response = groq_client.chat.completions.create(**reasoning_kwargs)
+        except Exception as e:
+            if not _groq_rejects_reasoning_params(e):
+                raise
+            log.info(
+                "Groq model %s rejected reasoning parameters (%s); retrying without them.",
+                GROQ_MODEL, e,
+            )
+            response = groq_client.chat.completions.create(**kwargs)
         return (response.choices[0].message.content or "").strip() or None
     except Exception as e:
-        log.error(f"Groq error: {e}")
+        log.warning(
+            "Groq chat failed (model=%s); using non-AI fallback: %s",
+            GROQ_MODEL, e,
+        )
         return None
 
 
@@ -1417,15 +1571,9 @@ def build_monday_overview(
     else:
         lines.append("<i>Could not reach Tanzanite Terminal API.</i>")
 
-    # Week-on-week movers from dedicated trending endpoint
-    movers = []
-    for e in as_list(trending):
-        e   = as_dict(e)
-        pct = num(e.get("usd_change_pct"))
-        if e.get("label") and pct is not None:
-            movers.append((str(e["label"]), pct))
-    gainers = [m for m in movers if m[1] > 0][:3]
-    losers  = [m for m in reversed(movers) if m[1] < 0][:3]
+    # Week-on-week movers from dedicated trending endpoint, filtered for
+    # missing / near-zero volume and likely data-gap collapses.
+    gainers, losers = select_wow_movers(trending, parse_site_volumes(data))
     if gainers or losers:
         lines.append("\n📈 <b>Week-on-Week Movers</b>")
     if gainers:
