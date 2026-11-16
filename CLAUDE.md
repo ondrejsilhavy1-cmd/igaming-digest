@@ -29,7 +29,7 @@ The bot only posts. It has no command or message handlers and doesn't poll Teleg
 - Python 3.10+ (the code uses `X | None` type syntax). No Python version is pinned in the repo.
 - `pyTelegramBotAPI` (`telebot`): sends messages with `parse_mode="HTML"`.
 - `APScheduler`: a `BlockingScheduler(timezone="Europe/Berlin")` (`tzdata` in requirements for slim images).
-- `groq`: model `GROQ_MODEL = "llama-3.3-70b-versatile"`, called through `groq_chat` / `groq_json`. Every Groq failure has a non-AI fallback.
+- `groq`: model from optional env `GROQ_MODEL`, default `openai/gpt-oss-120b` (Groq's production replacement for the retired `llama-3.3-70b-versatile`). Called through `groq_chat` / `groq_json`. Reasoning models get `reasoning_format="hidden"` and `reasoning_effort="low"` plus a token buffer; if the model rejects those params, the call is retried without them. Every Groq failure is logged as a warning (including the model name) and has a non-AI fallback.
 - `feedparser`: RSS news, plus optional Twitter/X feeds through RSSHub.
 - `requests`: Tanzanite public API (`https://www.tanzanite.xyz/api/public/casino-analytics/...`: `deposit-volume`, `trending`, `deposit-distribution`). No auth needed.
 - Circus (`https://www.circus.fyi/api/streamer-analytics?days=7`, `/api/updates`) and FairGambling (`https://api.fairgambling.com/api/analytics/home-bundle`, `/api/complaints/stats/global`): undocumented public frontend APIs, no auth. One GET each per post, 15s timeout, `fetch_json` returns `None` on any error and the block is omitted. Field names used are documented in `build_circus_block` / `build_fairgambling_block`. **Both sites' robots.txt disallow /api/ and their terms restrict reuse; get permission before relying on them.**
@@ -57,6 +57,7 @@ README.md         # One-line description
 | State | `state.json` in `STATE_DIR`: `posted_links` {link: {date, title, slot}} (14-day TTL) and `event_posts` {event_key: date}. `seen_headlines.json` sits next to it |
 | News + Groq | `fetch_news_headlines`, `ai_top_weekly_stories`, `ai_news_takes`, `ai_deep_take`, `ai_poll` / `validate_poll` / `POLL_FALLBACKS` |
 | Data blocks | `fetch_circus` / `build_circus_block`, `fetch_fairgambling` / `build_fairgambling_block`, `build_onchain_block` |
+| WoW movers | `parse_site_volumes`, `select_wow_movers` / `is_reliable_wow_mover` (Monday winners/losers; thresholds `WOW_*`) |
 | Builders | `build_monday_overview`, `build_tuesday_news`, `build_wednesday_poll`, `build_thursday_update`, `build_afternoon_drink`, `due_event_posts` (pure), `build_event_countdowns` |
 | Senders + `main()` | `send_*` jobs, commented test hooks, scheduler registration |
 
@@ -81,7 +82,7 @@ There are **no automated tests**, no test framework, and no linter or CI configu
 1. Run the bot locally against a test channel, using one of the test lines in `main()` or a direct call to a builder or sender.
 2. Watch the logs (`cashout-bot` logger, INFO level) for Tanzanite, Groq, and feed errors. Every external call catches its own exceptions and logs them, so a failure produces a degraded message rather than a crash.
 
-If you add tests, the pure functions are easy to cover with fixture JSON: `parse_*`, `clean_name`, `format_volume`, `titles_are_similar`, `validate_poll`, `due_event_posts` / `final_call_date`, `build_circus_block` / `build_fairgambling_block` (take raw JSON), `build_afternoon_drink`. Importing `bot` requires `TELEGRAM_TOKEN`, `CHANNEL_ID`, and `GROQ_API_KEY` to be set (dummy values are fine).
+If you add tests, the pure functions are easy to cover with fixture JSON: `parse_*`, `clean_name`, `format_volume`, `titles_are_similar`, `validate_poll`, `due_event_posts` / `final_call_date`, `build_circus_block` / `build_fairgambling_block` (take raw JSON), `build_afternoon_drink`, `select_wow_movers` / `is_reliable_wow_mover`. Importing `bot` requires `TELEGRAM_TOKEN`, `CHANNEL_ID`, and `GROQ_API_KEY` to be set (dummy values are fine). `GROQ_MODEL` is optional.
 
 ## Deployment
 
@@ -102,6 +103,7 @@ Names only, read from `bot.py`. There is no `.env.example`.
 | `TELEGRAM_TOKEN` | Yes | Telegram bot token |
 | `CHANNEL_ID` | Yes | Target channel (`@name` or numeric ID) |
 | `GROQ_API_KEY` | Yes | Groq API key |
+| `GROQ_MODEL` | No | Groq chat model id. Default `openai/gpt-oss-120b`. Override if Groq retires that model or you want a different one; no Railway change is required for the default to apply. |
 | `RSSHUB_URL` | No | Base URL of an RSSHub instance. If set, Twitter/X feeds for `TWITTER_ACCOUNTS` are added to `RSS_FEEDS` |
 | `STATE_DIR` | No | Where `state.json` and `seen_headlines.json` live (default `/app` if writable, else `./.state`) |
 | `ENABLE_CIRCUS` | No | Circus creator block on Monday. On unless `0`/`false`/`off`/`no` |
@@ -116,6 +118,7 @@ Never commit values for these variables.
 - **State is probably ephemeral** on Railway unless a volume is mounted at `STATE_DIR` (see Deployment).
 - **Circus / FairGambling are unofficial APIs**: robots.txt disallows /api/ on both and their terms restrict reuse. Toggle them off with `ENABLE_CIRCUS=0` / `ENABLE_FAIRGAMBLING=0` if asked; field names can change without notice (blocks then disappear silently).
 - **Tanzanite is flaky** (502/521/522 seen). Posts degrade to a "could not reach" line; the Monday chart is skipped if the volume endpoint is down.
+- **Monday WoW movers** join the trending endpoint (percent only) to 7-day deposit volumes. Casinos with missing or near-zero current volume, a previous-week base below `WOW_MIN_PREV_USD`, or a drop of `WOW_DATA_GAP_PCT` or worse with tiny current volume are excluded, so missing data is not shown as a real collapse. If volume data is unavailable, only drops of `WOW_DATA_GAP_PCT` or worse are dropped. Thresholds are constants at the top of `bot.py`.
 - **Failures are silent.** Every error is caught and logged, and there is no alerting. A failed scheduled post is simply skipped (APScheduler `misfire_grace_time` is 600s).
 - **Polls in a channel are anonymous**, so nobody's vote is visible; the discussion happens in the linked group's comments. The bot never reads or posts in the discussion group.
 - **Friday copy** rotates through 5 variants by ISO week. Hosting (a person replying in the comments) is not automated.
